@@ -236,6 +236,8 @@ namespace ACE.Server.Entity
             }
         }
 
+        public bool HasWindupGestures => Scarabs.Any(i => i != Scarab.Lead);
+
         /// <summary>
         /// Returns the spell casting gesture, after the initial windup(s) are completed
         /// Based on the talisman (assumed to be the last spell component)
@@ -336,6 +338,25 @@ namespace ACE.Server.Entity
         public void GetCurrentFormula(Player player)
         {
             CurrentFormula = player.HasFoci(Spell.School) ? FociFormula : PlayerFormula;
+        }
+
+        /// <summary>
+        /// Returns a mapping of component wcid => number required
+        /// </summary>
+        public Dictionary<uint, int> GetRequiredComps()
+        {
+            var compsRequired = new Dictionary<uint, int>();
+
+            foreach (var component in CurrentFormula)
+            {
+                var wcid = Spell.GetComponentWCID(component);
+
+                if (compsRequired.ContainsKey(wcid))
+                    compsRequired[wcid]++;
+                else
+                    compsRequired.Add(wcid, 1);
+            }
+            return compsRequired;
         }
     }
 }

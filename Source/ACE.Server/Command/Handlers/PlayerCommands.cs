@@ -25,7 +25,7 @@ namespace ACE.Server.Command.Handlers
             "")]
         public static void HandlePop(Session session, params string[] parameters)
         {
-            session.Network.EnqueueSend(new GameMessageSystemChat($"Current world population: {PlayerManager.GetAllOnline().Count.ToString()}\n", ChatMessageType.Broadcast));
+            session.Network.EnqueueSend(new GameMessageSystemChat($"Current world population: {PlayerManager.GetOnlineCount().ToString()}\n", ChatMessageType.Broadcast));
         }
 
         // quest info (uses GDLe formatting to match plugin expectations)
@@ -129,6 +129,50 @@ namespace ACE.Server.Command.Handlers
             actionChain.EnqueueChain();
 
             Console.WriteLine("OK");
+        }
+
+        [CommandHandler("debugcast", AccessLevel.Player, CommandHandlerFlag.RequiresWorld, "Shows debug information about the current magic casting state")]
+        public static void HandleDebugCast(Session session, params string[] parameters)
+        {
+            var physicsObj = session.Player.PhysicsObj;
+
+            var pendingActions = physicsObj.MovementManager.MoveToManager.PendingActions;
+            var currAnim = physicsObj.PartArray.Sequence.CurrAnim;
+
+            session.Network.EnqueueSend(new GameMessageSystemChat(session.Player.MagicState.ToString(), ChatMessageType.Broadcast));
+            session.Network.EnqueueSend(new GameMessageSystemChat($"IsMovingOrAnimating: {physicsObj.IsMovingOrAnimating}", ChatMessageType.Broadcast));
+            session.Network.EnqueueSend(new GameMessageSystemChat($"PendingActions: {pendingActions.Count}", ChatMessageType.Broadcast));
+            session.Network.EnqueueSend(new GameMessageSystemChat($"CurrAnim: {currAnim?.Value.Anim.ID:X8}", ChatMessageType.Broadcast));
+        }
+
+        [CommandHandler("fixcast", AccessLevel.Player, CommandHandlerFlag.RequiresWorld, "Fixes magic casting if locked up for an extended time")]
+        public static void HandleFixCast(Session session, params string[] parameters)
+        {
+            var magicState = session.Player.MagicState;
+
+            if (magicState.IsCasting && DateTime.UtcNow - magicState.StartTime > TimeSpan.FromSeconds(5))
+            {
+                session.Network.EnqueueSend(new GameEventCommunicationTransientString(session, "Fixed casting state"));
+                session.Player.SendUseDoneEvent();
+                magicState.OnCastDone();
+            }
+        }
+
+        [CommandHandler("castmeter", AccessLevel.Player, CommandHandlerFlag.RequiresWorld, "Shows the fast casting efficiency meter")]
+        public static void HandleCastMeter(Session session, params string[] parameters)
+        {
+            if (parameters.Length == 0)
+            {
+                session.Player.MagicState.CastMeter = !session.Player.MagicState.CastMeter;
+            }
+            else
+            {
+                if (parameters[0].Equals("on", StringComparison.OrdinalIgnoreCase))
+                    session.Player.MagicState.CastMeter = true;
+                else
+                    session.Player.MagicState.CastMeter = false;
+            }
+            session.Network.EnqueueSend(new GameMessageSystemChat($"Cast efficiency meter {(session.Player.MagicState.CastMeter ? "enabled" : "disabled")}", ChatMessageType.Broadcast));
         }
 
         private static List<string> configList = new List<string>()

@@ -1,10 +1,15 @@
-using System;
+using System.Numerics;
+
+using log4net;
+
 using ACE.Database.Models.Shard;
 using ACE.Database.Models.World;
 using ACE.Entity;
 using ACE.Entity.Enum;
 using ACE.Entity.Enum.Properties;
 using ACE.Server.Entity;
+using ACE.Server.Entity.Actions;
+using ACE.Server.Managers;
 using ACE.Server.Network.GameEvent.Events;
 using ACE.Server.Network.GameMessages.Messages;
 
@@ -12,6 +17,8 @@ namespace ACE.Server.WorldObjects
 {
     public partial class Portal : WorldObject
     {
+        private static readonly ILog log = LogManager.GetLogger(System.Reflection.MethodBase.GetCurrentMethod().DeclaringType);
+
         /// <summary>
         /// A new biota be created taking all of its values from weenie.
         /// </summary>
@@ -33,6 +40,29 @@ namespace ACE.Server.WorldObjects
             ObjectDescriptionFlags |= ObjectDescriptionFlag.Portal;
 
             UpdatePortalDestination(Destination);
+        }
+
+        public override bool EnterWorld()
+        {
+            var success = base.EnterWorld();
+
+            if (!success)
+            {
+                log.Error($"{Name} ({Guid}) failed to spawn @ {Location?.ToLOCString()}");
+                return false;
+            }
+
+            if (RelativeDestination != null && Location != null && Destination == null)
+            {
+                var relativeDestination = new Position(Location);
+                relativeDestination.Pos += new Vector3(RelativeDestination.PositionX, RelativeDestination.PositionY, RelativeDestination.PositionZ);
+                relativeDestination.Rotation = new Quaternion(RelativeDestination.RotationX, relativeDestination.RotationY, relativeDestination.RotationZ, relativeDestination.RotationW);
+                relativeDestination.LandblockId = new LandblockId(relativeDestination.GetCell());
+
+                UpdatePortalDestination(relativeDestination);
+            }
+
+            return true;
         }
 
         public void UpdatePortalDestination(Position destination)
@@ -131,16 +161,17 @@ namespace ACE.Server.WorldObjects
             // player.Session.Network.EnqueueSend(new GameMessageSystemChat("Portal sending player to destination", ChatMessageType.System));
 #endif
             var portalDest = new Position(Destination);
-            player.AdjustDungeon(portalDest);
+            WorldObject.AdjustDungeon(portalDest);
 
-            player.Teleport(portalDest);
+            WorldManager.ThreadSafeTeleport(player, portalDest, new ActionEventDelegate(() =>
+            {
+                // If the portal just used is able to be recalled to,
+                // save the destination coordinates to the LastPortal character position save table
+                if (!NoRecall)
+                    player.LastPortalDID = OriginalPortal == null ? WeenieClassId : OriginalPortal; // if walking through a summoned portal
 
-            // If the portal just used is able to be recalled to,
-            // save the destination coordinates to the LastPortal character position save table
-            if (!NoRecall)
-                player.LastPortalDID = OriginalPortal == null ? WeenieClassId : OriginalPortal;     // if walking through a summoned portal
-
-            EmoteManager.OnPortal(player);
+                EmoteManager.OnPortal(player);
+            }));
         }
     }
 }

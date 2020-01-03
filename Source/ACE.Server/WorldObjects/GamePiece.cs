@@ -49,7 +49,7 @@ namespace ACE.Server.WorldObjects
             killChain.AddDelaySeconds(5);
             killChain.AddAction(this, () =>
             {
-                ApplyVisualEffects(global::ACE.Entity.Enum.PlayScript.Destroy);
+                ApplyVisualEffects(PlayScript.Destroy);
             });
             killChain.AddDelaySeconds(1);
             killChain.AddAction(this, () => Destroy());
@@ -161,15 +161,6 @@ namespace ACE.Server.WorldObjects
             moveToPosition.MoveToParameters.DesiredHeading = physPos.Frame.get_heading();
 
             SetWalkRunThreshold(moveToPosition, to);
-
-            if (!InitSticky)
-            {
-                PhysicsObj.add_moveto_listener(OnMoveComplete);
-
-                PhysicsObj.add_sticky_listener(OnSticky);
-                PhysicsObj.add_unsticky_listener(OnUnsticky);
-                InitSticky = true;
-            }
 
             var mvp = GetMovementParameters();
             mvp.CanWalk = true;

@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 
+using ACE.Common;
 using ACE.Common.Extensions;
 using ACE.Database.Models.Shard;
 using ACE.Entity.Enum;
@@ -120,10 +121,22 @@ namespace ACE.Server.WorldObjects.Managers
                 group e by e.SpellCategory
                 into categories
                 //select categories.OrderByDescending(c => c.LayerId).First();
-                select categories.OrderByDescending(c => c.PowerLevel).First();
+                select categories.OrderByDescending(c => c.PowerLevel).ThenByDescending(c => Level8AuraSelfSpells.Contains(c.SpellId)).First();
 
             return results.ToList();
         }
+
+        // this ensures level 8 item self spells always take precedence over level 8 item other spells
+
+        public static HashSet<int> Level8AuraSelfSpells = new HashSet<int>()
+        {
+            (int)SpellId.BloodDrinkerSelf8,
+            (int)SpellId.DefenderSelf8,
+            (int)SpellId.HeartSeekerSelf8,
+            (int)SpellId.SpiritDrinkerSelf8,
+            (int)SpellId.SwiftKillerSelf8,
+            (int)SpellId.HermeticLinkSelf8,
+        };
 
         /// <summary>
         /// Returns the top layers in each spell category for a StatMod type
@@ -319,12 +332,6 @@ namespace ACE.Server.WorldObjects.Managers
 
                 if (sound && entry.SpellCategory != SpellCategory_Cooldown)
                     Player.Session.Network.EnqueueSend(new GameMessageSound(Player.Guid, Sound.SpellExpire, 1.0f));
-
-                if (entry.SpellCategory != SpellCategory_Cooldown)
-                {
-                    var spell = new Spell(spellID);
-                    Player.HandleMaxVitalUpdate(spell);
-                }
             }
             else
             {
@@ -472,12 +479,7 @@ namespace ACE.Server.WorldObjects.Managers
                 WorldObject.ChangesDetected = true;
 
             if (Player != null)
-            {
                 Player.Session.Network.EnqueueSend(new GameEventMagicDispelEnchantment(Player.Session, (ushort)entry.SpellId, entry.LayerId));
-
-                var spell = new Spell(spellID);
-                Player.HandleMaxVitalUpdate(spell);
-            }
         }
 
         /// <summary>
@@ -492,12 +494,6 @@ namespace ACE.Server.WorldObjects.Managers
             {
                 if (WorldObject.Biota.TryRemoveEnchantment(entry, out _, WorldObject.BiotaDatabaseLock))
                     WorldObject.ChangesDetected = true;
-
-                if (Player != null)
-                {
-                    var spell = new Spell(entry.SpellId);
-                    Player.HandleMaxVitalUpdate(spell);
-                }
             }
             if (Player != null)
                 Player.Session.Network.EnqueueSend(new GameEventMagicDispelMultipleEnchantments(Player.Session, entries));
@@ -1268,7 +1264,7 @@ namespace ACE.Server.WorldObjects.Managers
         public void ApplyHealingTick(List<BiotaPropertiesEnchantmentRegistry> enchantments)
         {
             var creature = WorldObject as Creature;
-            if (creature == null) return;
+            if (creature == null || creature.IsDead) return;
 
             // get the total tick amount
             var tickAmountTotal = 0.0f;
@@ -1299,8 +1295,9 @@ namespace ACE.Server.WorldObjects.Managers
         public void ApplyDamageTick(List<BiotaPropertiesEnchantmentRegistry> enchantments, DamageType damageType)
         {
             var creature = WorldObject as Creature;
-            if (creature == null) return;
+            if (creature == null || creature.IsDead) return;
 
+            bool isDead = false;
             var damagers = new Dictionary<WorldObject, float>();
 
             // get the total tick amount
@@ -1324,6 +1321,10 @@ namespace ACE.Server.WorldObjects.Managers
                     continue;
                 }
 
+                // if a PKType with Enduring Enchantment has died, ensure they don't continue to take DoT from PK sources
+                if (WorldObject is Player _player && damager is Player && !_player.IsPKType)
+                    continue;
+
                 // get damage / damage resistance rating here for now?
                 var heritageMod = 1.0f;
                 if (damager is Player player)
@@ -1331,7 +1332,7 @@ namespace ACE.Server.WorldObjects.Managers
 
                 var damageRatingMod = Creature.AdditiveCombine(heritageMod, Creature.GetPositiveRatingMod(damager.GetDamageRating()));
 
-                var damageResistRatingMod = Creature.GetNegativeRatingMod(creature.GetDamageResistRating(CombatType.Magic));    // df?
+                var damageResistRatingMod = Creature.GetNegativeRatingMod(creature.GetDamageResistRating(CombatType.Magic, false));    // df?
                 var dotResistRatingMod = Creature.GetNegativeRatingMod(creature.GetDotResistanceRating());
 
                 //Console.WriteLine("DR: " + Creature.ModToRating(damageRatingMod));
@@ -1339,6 +1340,13 @@ namespace ACE.Server.WorldObjects.Managers
                 //Console.WriteLine("NRR: " + Creature.NegativeModToRating(netherResistRatingMod));
 
                 tickAmount *= damageRatingMod * damageResistRatingMod * dotResistRatingMod;
+
+                // make sure the target's current health is not exceeded
+                if (tickAmountTotal + tickAmount >= creature.Health.Current)
+                {
+                    tickAmount = creature.Health.Current - tickAmountTotal;
+                    isDead = true;
+                }
 
                 if (damagers.ContainsKey(damager))
                     damagers[damager] += tickAmount;
@@ -1348,6 +1356,8 @@ namespace ACE.Server.WorldObjects.Managers
                 creature.DamageHistory.Add(damager, damageType, (uint)Math.Round(tickAmount));
 
                 tickAmountTotal += tickAmount;
+
+                if (isDead) break;
             }
 
             creature.TakeDamageOverTime(tickAmountTotal, damageType);

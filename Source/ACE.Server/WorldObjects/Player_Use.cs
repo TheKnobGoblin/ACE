@@ -1,3 +1,5 @@
+using System;
+
 using ACE.Entity;
 using ACE.Entity.Enum;
 using ACE.Server.Entity.Actions;
@@ -77,6 +79,31 @@ namespace ACE.Server.WorldObjects
                 return;
             }
 
+            if (IsTrading)
+            {
+                if (ItemsInTradeWindow.Contains(sourceItem.Guid))
+                {
+                    SendUseDoneEvent(WeenieError.TradeItemBeingTraded);
+                    //SendWeenieError(WeenieError.TradeItemBeingTraded);
+                    return;
+                }
+                if (ItemsInTradeWindow.Contains(target.Guid))
+                {
+                    SendUseDoneEvent(WeenieError.TradeItemBeingTraded);
+                    //SendWeenieError(WeenieError.TradeItemBeingTraded);
+                    return;
+                }
+            }
+
+            // re-verify client checks
+            if (((sourceItem.TargetType ?? ItemType.None) & target.ItemType) == ItemType.None)
+            {
+                // ItemHolder::TargetCompatibleWithObject
+                SendTransientError($"Cannot use the {sourceItem.Name} with the {target.Name}");
+                SendUseDoneEvent();
+                return;
+            }
+
             sourceItem.HandleActionUseOnTarget(this, target);
         }
 
@@ -95,6 +122,13 @@ namespace ACE.Server.WorldObjects
             StopExistingMoveToChains();
 
             var item = FindObject(itemGuid, SearchLocations.MyInventory | SearchLocations.MyEquippedItems | SearchLocations.Landblock);
+
+            if (IsTrading && ItemsInTradeWindow.Contains(item.Guid))
+            {
+                SendUseDoneEvent(WeenieError.TradeItemBeingTraded);
+                //SendWeenieError(WeenieError.TradeItemBeingTraded);
+                return;
+            }
 
             if (item != null)
             {
@@ -118,7 +152,8 @@ namespace ACE.Server.WorldObjects
             }
         }
 
-        public float LastUseTime;
+        public DateTime NextUseTime { get; set; }
+        public float LastUseTime { get; set; }
 
         /// <summary>
         /// Attempts to use an item - checks activation requirements
@@ -135,6 +170,8 @@ namespace ACE.Server.WorldObjects
             actionChain.AddDelaySeconds(LastUseTime);
             actionChain.AddAction(this, () => SendUseDoneEvent());
             actionChain.EnqueueChain();
+
+            NextUseTime = DateTime.UtcNow + TimeSpan.FromSeconds(LastUseTime);
         }
 
         /// <summary>
