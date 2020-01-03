@@ -29,6 +29,8 @@ namespace ACE.Server.Network.Structure
         public TurnToObject TurnToObject;
         public TurnToHeading TurnToHeading;
 
+        public MovementData() { }
+
         public MovementData(WorldObject wo)
         {
             WorldObject = wo;
@@ -37,7 +39,7 @@ namespace ACE.Server.Network.Structure
         public MovementData(WorldObject wo, Motion motion)
         {
             WorldObject = wo;
-            var sequence = wo.Sequences;
+            //var sequence = wo.Sequences;
 
             // do this here, or in network writer?
             IsAutonomous = motion.IsAutonomous;
@@ -134,6 +136,10 @@ namespace ACE.Server.Network.Structure
             {
                 interpState.TurnCommand = MotionCommand.TurnRight;
                 interpState.TurnSpeed = holdKey == HoldKey.Run ? 1.5f : 1.0f;
+
+                // mouselook
+                if (rawState.TurnSpeed != 0 && rawState.TurnSpeed <= 1.5f)
+                    interpState.TurnSpeed = rawState.TurnSpeed;
 
                 if (rawState.TurnCommand == MotionCommand.TurnLeft)
                     interpState.TurnSpeed *= -1;

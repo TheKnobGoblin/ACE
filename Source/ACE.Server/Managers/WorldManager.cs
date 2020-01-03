@@ -68,7 +68,7 @@ namespace ACE.Server.Managers
             if (WorldStatus == WorldStatusState.Closed)
                 log.Info($"To open world to players, use command: world open");
         }
- 
+
         internal static void Open(Player player)
         {
             WorldStatus = WorldStatusState.Open;
@@ -81,7 +81,7 @@ namespace ACE.Server.Managers
             var msg = "World is now closed";
             if (bootPlayers)
                 msg += ", and booting all online players.";
-            
+
             PlayerManager.BroadcastToAuditChannel(player, msg);
 
             if (bootPlayers)
@@ -262,6 +262,24 @@ namespace ACE.Server.Managers
                     result += $"{line}\n";
 
             return Regex.Replace(result, "\n$", "");
+        }
+
+        /// <summary>
+        /// ACE allows for multi-threading with thread boundaries based on the "LandblockGroup" concept
+        /// The risk of moving the player immediately is that the player may move onto another LandblockGroup, and thus, cross thread boundaries
+        /// This will enqueue the work onto WorldManager making the teleport thread safe.
+        /// Note that this work will be done on the next tick, not immediately, so be careful about your order of operations.
+        /// If you must ensure order, pass your follow up work in with the argument actionToFollowUpWith. That work will be enqueued onto the Player.
+        /// </summary>
+        public static void ThreadSafeTeleport(Player player, Position newPosition, IAction actionToFollowUpWith = null)
+        {
+            EnqueueAction(new ActionEventDelegate(() =>
+            {
+                player.Teleport(newPosition);
+
+                if (actionToFollowUpWith != null)
+                    EnqueueAction(actionToFollowUpWith);
+            }));
         }
 
         public static void EnqueueAction(IAction action)

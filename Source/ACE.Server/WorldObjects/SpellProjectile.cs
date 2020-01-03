@@ -1,6 +1,7 @@
 using System;
 using System.Numerics;
 
+using ACE.Common;
 using ACE.Database.Models.Shard;
 using ACE.Database.Models.World;
 using ACE.Entity;
@@ -19,9 +20,17 @@ namespace ACE.Server.WorldObjects
         public Server.Entity.Spell Spell;
         public ProjectileSpellType SpellType { get; set; }
 
-        public Position SpawnPos;
+        public Position SpawnPos { get; set; }
         public float DistanceToTarget { get; set; }
         public uint LifeProjectileDamage { get; set; }
+
+        /// <summary>
+        /// If a spell projectile has been cast from a built-in weapon spell,
+        /// this will point to the item instead of the Creature
+        /// </summary>
+        public WorldObject Caster { get; set; }
+
+        public SpellProjectileInfo Info { get; set; }
 
         /// <summary>
         /// A new biota be created taking all of its values from weenie.
@@ -49,11 +58,10 @@ namespace ACE.Server.WorldObjects
         /// <summary>
         /// Perfroms additional set up of the spell projectile based on the spell id or its derived type.
         /// </summary>
-        /// <param name="spellId"></param>
-        public void Setup(uint spellId)
+        public void Setup(Server.Entity.Spell spell, ProjectileSpellType spellType)
         {
-            Spell = new Server.Entity.Spell(spellId);
-            SpellType = GetProjectileSpellType(spellId);
+            Spell = spell;
+            SpellType = spellType;
 
             InitPhysicsObj();
 
@@ -62,15 +70,16 @@ namespace ACE.Server.WorldObjects
             Missile = true;
             AlignPath = true;
             PathClipped = true;
+            IgnoreCollisions = false;
+
             if (!Spell.Name.Equals("Rolling Death"))
                 Ethereal = false;
-            IgnoreCollisions = false;
 
             if (SpellType == ProjectileSpellType.Bolt || SpellType == ProjectileSpellType.Streak
                 || SpellType == ProjectileSpellType.Arc || SpellType == ProjectileSpellType.Volley || SpellType == ProjectileSpellType.Blast
                 || WeenieClassId == 7276 || WeenieClassId == 7277 || WeenieClassId == 7279 || WeenieClassId == 7280)
             {
-                PhysicsObj.DefaultScript = ACE.Entity.Enum.PlayScript.ProjectileCollision;
+                PhysicsObj.DefaultScript = PlayScript.ProjectileCollision;
                 PhysicsObj.DefaultScriptIntensity = 1.0f;
             }
 
@@ -81,16 +90,17 @@ namespace ACE.Server.WorldObjects
             }
 
             AllowEdgeSlide = false;
+
             // No need to send an ObjScale of 1.0f over the wire since that is the default value
             if (ObjScale == 1.0f)
                 ObjScale = null;
 
             if (SpellType == ProjectileSpellType.Ring)
             {
-                if (spellId == 3818)
+                if (spell.Id == 3818)
                 {
-                    PhysicsObj.DefaultScript = ACE.Entity.Enum.PlayScript.Explode;
-                    PhysicsObj.DefaultScriptIntensity = 1.0f;
+                    DefaultScriptId = (uint)PlayScript.Explode;
+                    DefaultScriptIntensity = 1.0f;
                     ScriptedCollision = true;
                 }
                 else
@@ -99,7 +109,6 @@ namespace ACE.Server.WorldObjects
                 }
             }
                 
-
             // Whirling Blade spells get omega values and "align path" turned off which
             // creates the nice swirling animation
             if (WeenieClassId == 1636 || WeenieClassId == 7268 || WeenieClassId == 20979)
@@ -107,19 +116,6 @@ namespace ACE.Server.WorldObjects
                 AlignPath = false;
                 Omega = new Vector3(12.56637f, 0, 0);
             }
-        }
-
-        public enum ProjectileSpellType
-        {
-            Undef,
-            Bolt,
-            Blast,
-            Volley,
-            Streak,
-            Arc,
-            Ring,
-            Wall,
-            Strike
         }
 
         public static ProjectileSpellType GetProjectileSpellType(uint spellID)
@@ -217,7 +213,7 @@ namespace ACE.Server.WorldObjects
             PhysicsObj.set_active(false);
 
             EnqueueBroadcastPhysicsState();
-            EnqueueBroadcast(new GameMessageScript(Guid, ACE.Entity.Enum.PlayScript.Explode, GetProjectileScriptIntensity(SpellType)));
+            EnqueueBroadcast(new GameMessageScript(Guid, PlayScript.Explode, GetProjectileScriptIntensity(SpellType)));
 
             ActionChain selfDestructChain = new ActionChain();
             selfDestructChain.AddDelaySeconds(5.0);
@@ -232,6 +228,13 @@ namespace ACE.Server.WorldObjects
         public override void OnCollideEnvironment()
         {
             //Console.WriteLine($"{Name}.OnCollideEnvironment()");
+
+            if (Info != null && ProjectileSource is Player player && player.DebugSpell)
+            {
+                player.Session.Network.EnqueueSend(new GameMessageSystemChat($"{Name}.OnCollideEnvironment()", ChatMessageType.Broadcast));
+                player.Session.Network.EnqueueSend(new GameMessageSystemChat(Info.ToString(), ChatMessageType.Broadcast));
+            }
+
             ProjectileImpact();
         }
 
@@ -240,6 +243,12 @@ namespace ACE.Server.WorldObjects
             //Console.WriteLine($"{Name}.OnCollideObject({_target.Name})");
 
             var player = ProjectileSource as Player;
+
+            if (Info != null && player != null && player.DebugSpell)
+            {
+                player.Session.Network.EnqueueSend(new GameMessageSystemChat($"{Name}.OnCollideObject({_target?.Name} ({_target?.Guid}))", ChatMessageType.Broadcast));
+                player.Session.Network.EnqueueSend(new GameMessageSystemChat(Info.ToString(), ChatMessageType.Broadcast));
+            }
 
             if (player != null)
                 player.LastHitSpellProjectile = Spell;
@@ -280,7 +289,7 @@ namespace ACE.Server.WorldObjects
             var critDefended = false;
             var overpower = false;
 
-            var damage = CalculateDamage(ProjectileSource, target, ref critical, ref critDefended, ref overpower);
+            var damage = CalculateDamage(ProjectileSource, Caster, target, ref critical, ref critDefended, ref overpower);
 
             // null damage -> target resisted; damage of -1 -> target already dead
             if (damage != null && damage != -1)
@@ -294,8 +303,8 @@ namespace ACE.Server.WorldObjects
                         player.Session.Network.EnqueueSend(dot.Message);
 
                     // corruption / corrosion playscript?
-                    //target.EnqueueBroadcast(new GameMessageScript(target.Guid, ACE.Entity.Enum.PlayScript.HealthDownVoid));
-                    //target.EnqueueBroadcast(new GameMessageScript(target.Guid, ACE.Entity.Enum.PlayScript.DirtyFightingDefenseDebuff));
+                    //target.EnqueueBroadcast(new GameMessageScript(target.Guid, PlayScript.HealthDownVoid));
+                    //target.EnqueueBroadcast(new GameMessageScript(target.Guid, PlayScript.DirtyFightingDefenseDebuff));
                 }
                 else
                 {
@@ -321,7 +330,7 @@ namespace ACE.Server.WorldObjects
         /// Calculates the damage for a spell projectile
         /// Used by war magic, void magic, and life magic projectiles
         /// </summary>
-        public double? CalculateDamage(WorldObject source, Creature target, ref bool criticalHit, ref bool critDefended, ref bool overpower)
+        public double? CalculateDamage(WorldObject source, WorldObject caster, Creature target, ref bool criticalHit, ref bool critDefended, ref bool overpower)
         {
             var sourcePlayer = source as Player;
             var targetPlayer = target as Player;
@@ -351,7 +360,7 @@ namespace ACE.Server.WorldObjects
             if (sourceCreature?.Overpower != null)
                 overpower = Creature.GetOverpower(sourceCreature, target);
 
-            var resisted = source.ResistSpell(target, Spell);
+            var resisted = source.ResistSpell(target, Spell, caster);
             if (resisted == true && !overpower)
                 return null;
 
@@ -360,7 +369,7 @@ namespace ACE.Server.WorldObjects
                 attackSkill = sourceCreature.GetCreatureSkill(Spell.School);
 
             // critical hit
-            var critical = GetWeaponMagicCritFrequencyModifier(sourceCreature, attackSkill, target);
+            var critical = GetWeaponMagicCritFrequency(sourceCreature, attackSkill, target);
             if (ThreadSafeRandom.Next(0.0f, 1.0f) < critical)
             {
                 if (targetPlayer != null && targetPlayer.AugmentationCriticalDefense > 0)
@@ -406,6 +415,22 @@ namespace ACE.Server.WorldObjects
             {
                 if (criticalHit)
                 {
+                    // Original:
+                    // http://acpedia.org/wiki/Announcements_-_2002/08_-_Atonement#Letter_to_the_Players
+
+                    // Critical Strikes: In addition to the skill-based damage bonus, each projectile spell has a 2% chance of causing a critical hit on the target and doing increased damage.
+                    // A magical critical hit is similar in some respects to melee critical hits (although the damage calculation is handled differently).
+                    // While a melee critical hit automatically does twice the maximum damage of the weapon, a magical critical hit will do an additional half the minimum damage of the spell.
+                    // For instance, a magical critical hit from a level 7 spell, which does 110-180 points of damage, would add an additional 55 points of damage to the spell.
+
+                    // Later updated for PvE only:
+
+                    // http://acpedia.org/wiki/Announcements_-_2004/07_-_Treaties_in_Stone#Letter_to_the_Players
+
+                    // Currently when a War Magic spell scores a critical hit, it adds a multiple of the base damage of the spell to a normal damage roll.
+                    // Starting in July, War Magic critical hits will instead add a multiple of the maximum damage of the spell.
+                    // No more crits that do less damage than non-crits!
+
                     if (isPVP) // PvP: 50% of the MIN damage added to normal damage roll
                         damageBonus = Spell.MinDamage * 0.5f;
                     else   // PvE: 50% of the MAX damage added to normal damage roll
@@ -670,7 +695,8 @@ namespace ACE.Server.WorldObjects
             }
             else
             {
-                target.OnDeath(ProjectileSource, Spell.DamageType, critical);
+                var lastDamager = ProjectileSource != null ? new DamageHistoryInfo(ProjectileSource) : null;
+                target.OnDeath(lastDamager, Spell.DamageType, critical);
                 target.Die();
             }
         }

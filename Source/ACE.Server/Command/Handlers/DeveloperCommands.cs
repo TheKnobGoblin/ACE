@@ -22,7 +22,6 @@ using ACE.Server.Managers;
 using ACE.Server.Network;
 using ACE.Server.Network.GameEvent.Events;
 using ACE.Server.Network.GameMessages.Messages;
-using ACE.Server.Physics.Common;
 using ACE.Server.Physics.Entity;
 using ACE.Server.Physics.Managers;
 using ACE.Server.WorldObjects;
@@ -94,7 +93,7 @@ namespace ACE.Server.Command.Handlers
         public static void HandleNudge(Session session, params string[] parameters)
         {
             var pos = session.Player.GetPosition(PositionType.Location);
-            if (session.Player.AdjustDungeonCells(pos))
+            if (WorldObject.AdjustDungeonCells(pos))
             {
                 pos.PositionZ += 0.005000f;
                 var posReadable = PostionAsLandblocksGoogleSpreadsheetFormat(pos);
@@ -1767,24 +1766,6 @@ namespace ACE.Server.Command.Handlers
         }
 
         /// <summary>
-        /// Enables / disables spell component burning
-        /// </summary>
-        [CommandHandler("safecomps", AccessLevel.Developer, CommandHandlerFlag.RequiresWorld, 0, "Enables / disables spell component burning", "/safecomps <on/off>")]
-        public static void HandleSafeComps(Session session, params string[] parameters)
-        {
-            var safeComps = true;
-            if (parameters.Length > 0 && parameters[0].ToLower().Equals("off"))
-                safeComps = false;
-
-            session.Player.SafeSpellComponents = safeComps;
-
-            if (safeComps)
-                session.Network.EnqueueSend(new GameMessageSystemChat("Your spell components are now safe, and will not be consumed when casting spells.", ChatMessageType.Broadcast));
-            else
-                session.Network.EnqueueSend(new GameMessageSystemChat("Your spell components will now be consumed when casting spells.", ChatMessageType.Broadcast));
-        }
-
-        /// <summary>
         /// Shows the current player location, from the server perspective
         /// </summary>
         [CommandHandler("myloc", AccessLevel.Developer, CommandHandlerFlag.RequiresWorld, 0, "Shows the current player location, from the server perspective", "/myloc")]
@@ -2140,7 +2121,7 @@ namespace ACE.Server.Command.Handlers
                 }
 
                 var pos = new Position(dest.ObjCellId, dest.OriginX, dest.OriginY, dest.OriginZ, dest.AnglesX, dest.AnglesY, dest.AnglesZ, dest.AnglesW);
-                session.Player.AdjustDungeon(pos);
+                WorldObject.AdjustDungeon(pos);
 
                 session.Player.Teleport(pos);
             }
@@ -2174,7 +2155,7 @@ namespace ACE.Server.Command.Handlers
                 }
 
                 var pos = new Position(dest.ObjCellId, dest.OriginX, dest.OriginY, dest.OriginZ, dest.AnglesX, dest.AnglesY, dest.AnglesZ, dest.AnglesW);
-                session.Player.AdjustDungeon(pos);
+                WorldObject.AdjustDungeon(pos);
 
                 session.Player.Teleport(pos);
             }
@@ -2344,7 +2325,18 @@ namespace ACE.Server.Command.Handlers
         [CommandHandler("testdeathitems", AccessLevel.Developer, CommandHandlerFlag.RequiresWorld, 0, "Test death item selection", "")]
         public static void HandleTestDeathItems(Session session, params string[] parameters)
         {
-            var inventory = session.Player.GetAllPossessions();
+            var target = session.Player;
+            if (parameters.Length > 0)
+            {
+                target = PlayerManager.GetOnlinePlayer(parameters[0]);
+                if (target == null)
+                {
+                    session.Network.EnqueueSend(new GameMessageSystemChat($"Couldn't find {parameters[0]}", ChatMessageType.Broadcast));
+                    return;
+                }
+            }
+
+            var inventory = target.GetAllPossessions();
             var sorted = new DeathItems(inventory);
 
             var i = 0;
@@ -2410,7 +2402,25 @@ namespace ACE.Server.Command.Handlers
                     break;
             }
         }
-        
+
+        /// <summary>
+        /// Enables / disables spell component burning
+        /// </summary>
+        [CommandHandler("safecomps", AccessLevel.Developer, CommandHandlerFlag.RequiresWorld, 0, "Enables / disables spell component burning", "/safecomps <on/off>")]
+        public static void HandleSafeComps(Session session, params string[] parameters)
+        {
+            var safeComps = true;
+            if (parameters.Length > 0 && parameters[0].ToLower().Equals("off"))
+                safeComps = false;
+
+            session.Player.SafeSpellComponents = safeComps;
+
+            if (safeComps)
+                session.Network.EnqueueSend(new GameMessageSystemChat("Your spell components are now safe, and will not be consumed when casting spells.", ChatMessageType.Broadcast));
+            else
+                session.Network.EnqueueSend(new GameMessageSystemChat("Your spell components will now be consumed when casting spells.", ChatMessageType.Broadcast));
+        }
+
         /// <summary>
         /// This is to add spells to items (whether loot or quest generated).  For making weapons to check damage from pcaps or other sources
         /// </summary>
@@ -2508,7 +2518,13 @@ namespace ACE.Server.Command.Handlers
                     msg += $"Generator Status: {(wo.GeneratorDisabled ? "Disabled" : "Enabled")}\n";
                     msg += $"GeneratorType: {wo.GeneratorType.ToString()}\n";
                     msg += $"GeneratorTimeType: {wo.GeneratorTimeType.ToString()}\n";
-                    msg += $"GeneratorEvent: {(!string.IsNullOrWhiteSpace(wo.GeneratorEvent) ? wo.GeneratorEvent : "Undef")}\n";
+                    if (wo.GeneratorTimeType == GeneratorTimeType.Event)
+                        msg += $"GeneratorEvent: {(!string.IsNullOrWhiteSpace(wo.GeneratorEvent) ? wo.GeneratorEvent : "Undef")}\n";
+                    if (wo.GeneratorTimeType == GeneratorTimeType.RealTime)
+                    {
+                        msg += $"GeneratorStartTime: {wo.GeneratorStartTime} ({Time.GetDateTimeFromTimestamp(wo.GeneratorStartTime).ToLocalTime()})\n";
+                        msg += $"GeneratorEndTime: {wo.GeneratorEndTime} ({Time.GetDateTimeFromTimestamp(wo.GeneratorEndTime).ToLocalTime()})\n";
+                    }
                     msg += $"GeneratorEndDestructionType: {wo.GeneratorEndDestructionType.ToString()}\n";
                     msg += $"GeneratorDestructionType: {wo.GeneratorDestructionType.ToString()}\n";
                     msg += $"GeneratorRadius: {wo.GetProperty(PropertyFloat.GeneratorRadius) ?? 0f}\n";
@@ -2544,6 +2560,20 @@ namespace ACE.Server.Command.Handlers
                             foreach (var spawn in profile.Spawned.Values)
                             {
                                 msg += $"0x{spawn.Guid}: {spawn.Name} - {spawn.WeenieClassId} - {spawn.WeenieType}\n";
+                                var spawnWO = spawn.TryGetWorldObject();
+                                if (spawnWO != null)
+                                {
+                                    if (spawnWO.Location != null)
+                                        msg += $" LOC: {spawnWO.Location.ToLOCString()}\n";
+                                    else if (spawnWO.ContainerId == wo.Guid.Full)
+                                        msg += $" Contained by Generator\n";
+                                    else if (spawnWO.WielderId == wo.Guid.Full)
+                                        msg += $" Wielded by Generator\n";
+                                    else
+                                        msg += $" Location Unknown\n";
+                                }
+                                else
+                                    msg += $" LOC: Unknown, WorldObject could not be found\n";
                             }
                             msg += $"--====--\n";
                         }
@@ -2636,16 +2666,44 @@ namespace ACE.Server.Command.Handlers
         [CommandHandler("targetloc", AccessLevel.Developer, CommandHandlerFlag.RequiresWorld, "Shows the location of the last appraised object")]
         public static void HandleTargetLoc(Session session, params string[] parameters)
         {
-            var wo = CommandHandlerHelper.GetLastAppraisedObject(session);
-            if (wo == null)
-                return;
+            WorldObject wo = null;
+            if (parameters.Length == 0)
+            {
+                wo = CommandHandlerHelper.GetLastAppraisedObject(session);
 
+                if (wo == null) return;
+            }
+            else
+            {
+                if (parameters[0].StartsWith("0x"))
+                    parameters[0] = parameters[0].Substring(2);
+
+                if (!uint.TryParse(parameters[0], NumberStyles.HexNumber, CultureInfo.InvariantCulture, out uint guid))
+                {
+                    session.Network.EnqueueSend(new GameMessageSystemChat($"{parameters[0]} is not a valid guid", ChatMessageType.Broadcast));
+                    return;
+                }
+
+                wo = session.Player.CurrentLandblock?.GetObject(guid);
+
+                if (wo == null)
+                    wo = ServerObjectManager.GetObjectA(guid)?.WeenieObj?.WorldObject;
+
+                if (wo == null)
+                {
+                    session.Network.EnqueueSend(new GameMessageSystemChat($"Couldn't find {parameters[0]}", ChatMessageType.Broadcast));
+                    return;
+                }
+            }
+
+            session.Network.EnqueueSend(new GameMessageSystemChat($"CurrentLandblock: 0x{wo.CurrentLandblock?.Id.Landblock:X4}", ChatMessageType.Broadcast));
             session.Network.EnqueueSend(new GameMessageSystemChat($"Location: {wo.Location?.ToLOCString()}", ChatMessageType.Broadcast));
             session.Network.EnqueueSend(new GameMessageSystemChat($"Physics : {wo.PhysicsObj?.Position}", ChatMessageType.Broadcast));
+            session.Network.EnqueueSend(new GameMessageSystemChat($"CurCell: 0x{wo.PhysicsObj?.CurCell?.ID:X8}", ChatMessageType.Broadcast));
         }
 
         [CommandHandler("damagehistory", AccessLevel.Developer, CommandHandlerFlag.RequiresWorld)]
-        public static void HandleDamageHitory(Session session, params string[] parameters)
+        public static void HandleDamageHistory(Session session, params string[] parameters)
         {
             session.Network.EnqueueSend(new GameMessageSystemChat(session.Player.DamageHistory.ToString(), ChatMessageType.Broadcast));
         }
@@ -2662,6 +2720,108 @@ namespace ACE.Server.Command.Handlers
 
             if (player != session.Player)
                 session.Network.EnqueueSend(new GameMessageSystemChat("Removed vitae for {player.Name}", ChatMessageType.Broadcast));
+        }
+
+        [CommandHandler("fast", AccessLevel.Developer, CommandHandlerFlag.RequiresWorld)]
+        public static void HandleFast(Session session, params string[] parameters)
+        {
+            var spell = new Spell(SpellId.QuicknessSelf8);
+            session.Player.CreateEnchantment(session.Player, session.Player, spell);
+        }
+
+        [CommandHandler("slow", AccessLevel.Developer, CommandHandlerFlag.RequiresWorld)]
+        public static void HandleSlow(Session session, params string[] parameters)
+        {
+            var spell = new Spell(SpellId.SlownessSelf8);
+            session.Player.CreateEnchantment(session.Player, session.Player, spell);
+        }
+
+        [CommandHandler("rip", AccessLevel.Developer, CommandHandlerFlag.RequiresWorld)]
+        public static void HandleRip(Session session, params string[] parameters)
+        {
+            // insta-death, without the confirmation dialog from /die
+            // useful during developer testing
+            session.Player.TakeDamage(session.Player, DamageType.Bludgeon, session.Player.Health.Current);
+        }
+
+        public static List<PropertyFloat> ResistProperties = new List<PropertyFloat>()
+        {
+            PropertyFloat.ResistSlash,
+            PropertyFloat.ResistPierce,
+            PropertyFloat.ResistBludgeon,
+            PropertyFloat.ResistFire,
+            PropertyFloat.ResistCold,
+            PropertyFloat.ResistAcid,
+            PropertyFloat.ResistElectric,
+            PropertyFloat.ResistNether
+        };
+
+        [CommandHandler("resist-info", AccessLevel.Developer, CommandHandlerFlag.RequiresWorld, "Shows the resistance info for the last appraised creature.")]
+        public static void HandleResistInfo(Session session, params string[] parameters)
+        {
+            var creature = CommandHandlerHelper.GetLastAppraisedObject(session) as Creature;
+            if (creature == null)
+            {
+                session.Network.EnqueueSend(new GameMessageSystemChat($"You must appraise a creature to use this command.", ChatMessageType.Broadcast));
+                return;
+            }
+
+            session.Network.EnqueueSend(new GameMessageSystemChat($"{creature.Name} ({creature.Guid}):", ChatMessageType.Broadcast));
+
+            var resistInfo = new Dictionary<PropertyFloat, double?>();
+            foreach (var prop in ResistProperties)
+                resistInfo.Add(prop, creature.GetProperty(prop));
+
+            foreach (var kvp in resistInfo.OrderByDescending(i => i.Value))
+                session.Network.EnqueueSend(new GameMessageSystemChat($"{kvp.Key} - {kvp.Value}", ChatMessageType.Broadcast));
+        }
+
+        [CommandHandler("debugspell", AccessLevel.Developer, CommandHandlerFlag.RequiresWorld, "Toggles spell projectile debugging info")]
+        public static void HandleDebugSpell(Session session, params string[] parameters)
+        {
+            if (parameters.Length == 0)
+            {
+                session.Player.DebugSpell = !session.Player.DebugSpell;
+            }
+            else
+            {
+                if (parameters[0].Equals("on", StringComparison.OrdinalIgnoreCase))
+                    session.Player.DebugSpell = true;
+                else
+                    session.Player.DebugSpell = false;
+            }
+            session.Network.EnqueueSend(new GameMessageSystemChat($"Spell projectile debugging is {(session.Player.DebugSpell ? "enabled" : "disabled")}", ChatMessageType.Broadcast));
+        }
+
+        [CommandHandler("recordcast", AccessLevel.Developer, CommandHandlerFlag.RequiresWorld, "Records spell casting keypresses to server for debugging")]
+        public static void HandleRecordCast(Session session, params string[] parameters)
+        {
+            if (parameters.Length == 0)
+            {
+                session.Player.RecordCast.Enabled = !session.Player.RecordCast.Enabled;
+            }
+            else
+            {
+                if (parameters[0].Equals("on", StringComparison.OrdinalIgnoreCase))
+                    session.Player.RecordCast.Enabled = true;
+                else
+                    session.Player.RecordCast.Enabled = false;
+            }
+            session.Network.EnqueueSend(new GameMessageSystemChat($"Record cast {(session.Player.RecordCast.Enabled ? "enabled" : "disabled")}", ChatMessageType.Broadcast));
+        }
+
+        [CommandHandler("pscript", AccessLevel.Developer, CommandHandlerFlag.RequiresWorld, 1)]
+        public static void HandlePScript(Session session, params string[] parameters)
+        {
+            var wo = CommandHandlerHelper.GetLastAppraisedObject(session);
+            if (wo == null) return;
+
+            if (!Enum.TryParse(typeof(PlayScript), parameters[0], true, out var pscript))
+            {
+                session.Network.EnqueueSend(new GameMessageSystemChat($"Couldn't find PlayScript.{parameters[0]}", ChatMessageType.Broadcast));
+                return;
+            }
+            wo.EnqueueBroadcast(new GameMessageScript(wo.Guid, (PlayScript)pscript));
         }
     }
 }
